@@ -1,0 +1,9 @@
+.pio
+secret.h
+wifi.json
+.cproject
+.settings/
+.project
+lib/
+pcb/main.s#*
+pcb/main.b#*
