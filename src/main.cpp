@@ -13,8 +13,9 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-
-#include "DHTesp.h"
+#include <map>
+#include <chrono>
+#include <algorithm>
 
 #include <CMQTT.h>
 
@@ -27,7 +28,9 @@
 #include <eventloop.h>
 #include <cledstatus.h>
 #define DEBUG
-#include <chrono>
+#include "sensors.h"
+
+#include <ArduinoJson.h>
 
 using namespace std;
 using namespace std::chrono_literals;
@@ -37,12 +40,7 @@ constexpr auto SERVER_PORT_WEB = 80;
 
 constexpr auto AP_MODE_TIMEOUT = 30s; // switch to ap if no wifi
 constexpr auto AUTO_REBOOT_AFTER_AP_MODE = 5min; // switch to ap if no wifi
-
-constexpr auto pinCS = D6;
-constexpr auto numberOfHorizontalDisplays = 4;
-constexpr auto numberOfVerticalDisplays = 1;
-
-constexpr auto DHTPin = D4;
+constexpr auto BEFORE_SLEEP_TIMEOUT = 5s;        // switch to ap if no wifi
 
 constexpr auto DEVICE_NAME = "weather3";
 const char *update_path = "/firmware";
@@ -50,11 +48,7 @@ constexpr auto DEF_AP_PWD = "12345678";
 
 using led_status::cled_status;
 
-void mqtt_send();
-
 const char *pDeviceName = nullptr;
-
-DHTesp dht;
 
 ESP8266WebServer serverWeb(SERVER_PORT_WEB);
 CMQTT mqtt;
@@ -62,6 +56,10 @@ ESP8266HTTPUpdateServer otaUpdater;
 CWifiStateSignal wifiStateSignal;
 auto config = CConfig<512>();
 cled_status status_led;
+
+StaticJsonDocument<256> sensors;
+
+void try_tosend_data(bool force);
 
 te_ret get_about(ostream& out) {
     out << "{";
@@ -72,16 +70,17 @@ te_ret get_about(ostream& out) {
     return er_ok;
 }
 
-te_ret get_status(ostream& out) {
-
+te_ret get_status(ostream &out) {
     out << "{";
-    out << "\"temperature\":";
-    toJson(out, dht.getTemperature());
-    out << ",\"humidity\":";
-    toJson(out, dht.getHumidity());
-    out << ",\"mqtt\":" << mqtt.isConnected();
+    out << "\"mqtt\":" << mqtt.isConnected();
     out << "}";
     return er_ok;
+}
+
+void deep_sleep() {
+    const auto sleeptime = chrono::seconds(config.getInt("DEEP_SLEEP_S"));
+    DBG_OUT << "deepSleep, sleeptime=" << sleeptime.count() << endl;
+    ESP.deepSleep(chrono::microseconds(sleeptime).count());
 }
 
 void setup_WebPages() {
@@ -140,11 +139,6 @@ void setup_WebPages() {
         log_buffer = "";
     });
 
-    serverWeb.on("/set_time", [&]() {
-        DBG_FUNK();
-        // todo
-    });
-
     serverWeb.serveStatic("/", LittleFS, "/www/");
 
     serverWeb.onNotFound([] {
@@ -161,16 +155,18 @@ void setup_WIFIConnect() {
     WiFi.hostname(pDeviceName);
     WiFi.begin();
 
-    wifiStateSignal.onChange([](const wl_status_t& status) {
-        DBG_OUT << "wifiStateSignal" << endl;
-        if (WL_CONNECTED == status) {
-            // skip AP mode
-            if (to_ap_mode_thread) {
-                status_led.set(cled_status::value_t::Work);
-                to_ap_mode_thread->cancel();
-            }
+    wifiStateSignal.onChange([](const wl_status_t &status) {
+      DBG_OUT << "wifiState" << status << endl;
+      if (WL_CONNECTED == status) {
+        // skip AP mode
+        DBG_OUT << "wifi RSSI=" << static_cast<signed>(WiFi.RSSI()) << endl;
+        if (to_ap_mode_thread) {
+          status_led.set(cled_status::value_t::Work);
+          to_ap_mode_thread->cancel();
         }
-        wifi_status(cout);
+        try_tosend_data(false);
+      }
+      wifi_status(cout);
     });
 
     to_ap_mode_thread = event_loop::set_timeout(
@@ -193,40 +189,94 @@ void setup_WIFIConnect() {
     }
 }
 
-void setup_signals() {
+void try_tosend_data(bool force) {
+    constexpr auto all_sensors = 5;
+
+    if (force || (sensors.size() == all_sensors)) {
+        if (WL_CONNECTED == WiFi.status()) {
+          mqtt.setup(config.getCSTR("MQTT_SERVER_IP"),
+                     config.getInt("MQTT_PORT"), pDeviceName);
+          mqtt.connect([](auto is_connected) {
+            if (is_connected) {
+              String json_string;
+              serializeJson(sensors, json_string);
+              mqtt.publish("stat/weather3", json_string.c_str());
+            } else {
+              DBG_OUT << "mqtt is not connected, state="
+                      << mqtt.get_client().state() << endl;
+            }
+            event_loop::set_timeout([]() { deep_sleep(); },
+                                    BEFORE_SLEEP_TIMEOUT);
+          });
+        } else {
+          DBG_OUT << "WiFi is not connected, state=" << WiFi.status() << endl;
+          event_loop::set_timeout([]() { deep_sleep(); }, BEFORE_SLEEP_TIMEOUT);
+        }
+    }
 }
 
-void setup_mqtt() {
-    DBG_FUNK();
-    mqtt.setup(config.getCSTR("MQTT_SERVER"), config.getInt("MQTT_PORT"),
-            pDeviceName);
-    string topic = "cmd/";
-    topic += pDeviceName;
-    mqtt.callback(topic, [](char* topic, uint8_t* payload, unsigned int length) {
-        DBG_OUT << "MQTT>>[" << topic << "]:";
-        auto tt = reinterpret_cast<const char*>(payload);
-        auto i = length;
-        while (i--) {
-            DBG_OUT << *tt;
-            tt++;
-        };
-        DBG_OUT << endl;
-        StaticJsonDocument<512> json_cmd;
-        DeserializationError error = deserializeJson(json_cmd, payload, length);
-        if (error) {
-            DBG_OUT << "Failed to read file, using default configuration" << endl;
-        }
+void collect_data() {
+    sensors.clear();
+    sensor::bmp180_get([](auto temperature, auto presure, auto status) {
+      DBG_OUT << "bmp180_get temperature=" << temperature
+              << ", presure=" << presure << ", status=" << status << endl;
+      if (status) {
+        sensors["bmp180"]["temperature"] = std::round(temperature * 100) / 100;
+        sensors["bmp180"]["presure"] = std::round(presure * 100) / 100;
+        try_tosend_data(false);
+      }
     });
+    sensor::dht_get([](auto temperature, auto humidity, auto status) {
+      DBG_OUT << "dht_get temperature=" << temperature
+              << ", humidity=" << humidity << ", status=" << status << endl;
+      if (status) {
+        sensors["dht"]["temperature"] = std::round(temperature * 100) / 100;
+        sensors["dht"]["humidity"] = std::round(humidity * 100) / 100;
+        try_tosend_data(false);
+      }
+    });
+    sensor::BH1750_get([](const float lux, bool status) {
+      DBG_OUT << "BH1750_get lux=" << lux << ", status=" << status << endl;
+
+      if (status) {
+        sensors["BH1750"]["value"] = lux;
+        try_tosend_data(false);
+      }
+    });
+    sensor::battery_get([](const float volt, bool status) {
+      DBG_OUT << "battery_get volt=" << volt << ", status=" << status << endl;
+      if (status) {
+        sensors["battery"]["value"] = std::round(volt * 100) / 100;
+        try_tosend_data(false);
+      }
+    });
+
+    wifiStateSignal.onChange([](const wl_status_t &status) {
+      if (WL_CONNECTED == status) {
+        sensors["wifi"]["RSSI"] = WiFi.RSSI();
+        sensors["wifi"]["IP"] = WiFi.localIP();
+        try_tosend_data(false);
+      }
+    });
+
+    event_loop::set_timeout(
+        []() {
+          DBG_OUT << "MAX_COLLECT_TIME passed, sending as is" << endl;
+          try_tosend_data(true);
+        },
+        chrono::seconds(config.getInt("MAX_COLLECT_TIME_S")));
 }
 
 void setup_config() {
     config.getConfig().clear();
     config.getConfig()["DEVICE_NAME"] = DEVICE_NAME;
-    config.getConfig()["MQTT_SERVER"] = "";
+    config.getConfig()["MQTT_SERVER_IP"] = "";
     config.getConfig()["MQTT_PORT"] = 0;
     config.getConfig()["MQTT_PERIOD"] = 60 * 1000;
     config.getConfig()["OTA_USERNAME"] = "";
     config.getConfig()["OTA_PASSWORD"] = "";
+    config.getConfig()["DEEP_SLEEP_S"] = 60 * 15;
+    config.getConfig()["MAX_COLLECT_TIME_S"] = 15;
     if (!config.load("/www/config/config.json")) {
         // write file
         config.write("/www/config/config.json");
@@ -236,6 +286,7 @@ void setup_config() {
 
 void setup() {
     Serial.begin(SERIAL_BAUND);
+    Wire.begin();
     logs_begin();
     DBG_FUNK();
 
@@ -245,51 +296,23 @@ void setup() {
     status_led.setup();
     status_led.set(cled_status::value_t::Warning);
     setup_config();
+    sensor::init();
+    collect_data();
+
     MDNS.addService("http", "tcp", SERVER_PORT_WEB);
     MDNS.begin(pDeviceName);
     setup_WebPages();
-    setup_signals();
 
     LittleFS_info(DBG_OUT);
-    setup_mqtt();
 
-    //------------------
-    dht.setup(DHTPin, DHTesp::DHT22);
     //-----------------
     setup_WIFIConnect();
     DBG_OUT << "Setup done" << endl;
 }
 
-static unsigned long nextMsgMQTT = 0;
-
-void mqtt_send() {
-    if (mqtt.isConnected()) {
-        nextMsgMQTT = millis() + config.getULong("MQTT_PERIOD");
-        string topic = "stat/";
-        topic += pDeviceName;
-        ostringstream payload;
-        get_status(payload);
-        DBG_OUT << "MQTT<<[" << topic << "]:" << payload.str() << endl;
-        mqtt.publish(topic, payload.str());
-    } else {
-        nextMsgMQTT = 0; // force to send after connection
-    }
-}
-
-void mqtt_loop() {
-    if (WL_CONNECTED != WiFi.status()) {
-        return;
-    }
-    mqtt.loop();
-
-    if (millis() >= nextMsgMQTT) { // send
-        mqtt_send();
-    }
-}
-
 void loop() {
     wifiStateSignal.loop();
-    mqtt_loop();
     serverWeb.handleClient();
     event_loop::loop();
+    mqtt.loop();
 }

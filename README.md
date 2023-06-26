@@ -24,15 +24,15 @@ http://www.kloppenborg.net/blog/microcontrollers/2016/08/02/getting-started-with
 Pin | Function    | ESP-8266 Pin | used
 TX  | TXD         | TXD          |
 RX  | RXD         | RXD          |
-A0  | ADC, 3.3V   | A0           | photoresistor
+A0  | ADC, 3.3V   | A0           | battery
 D0  | IO          | GPIO16       |
-D1  | IO, SCL     | GPIO5        | LedStript.in
-D2  | IO, SDA     | GPIO4        | WallSwitch.out
-D3  | IO, 10k P-up| GPIO0        | IRsensor.OUT
+D1  | IO, SCL     | GPIO5        | 
+D2  | IO, SDA     | GPIO4        | 
+D3  | IO, 10k P-up| GPIO0        | 
 D4  | IO, 10k P-up,LED|   GPIO2  | DHT.data
-D5  | IO, SCK     | GPIO14       | MAX7219.CLK
-D6  | IO, MISO    | GPIO12       | MAX7219.CS
-D7  | IO, MOSI    | GPIO13       | MAX7219.DIN
+D5  | IO, SCK     | GPIO14       | 
+D6  | IO, MISO    | GPIO12       | 
+D7  | IO, MOSI    | GPIO13       | 
 D8  | IO, 10k P-down, SS|  GPIO15|
 G   | Ground      | GND          |
 5V  | 5V          | -            |
@@ -49,8 +49,9 @@ RST | Reset       | RST          |
     |
    GND
  
-#photoresistor
-(+3.3) -termistor- (A0) -resistor 10k- (GND)
+#battery
+ vbat 130k --A0
+ adc val= 848,volt=3.72656 (3.95
 
 #DHT
 1 vcc (3.3V)
@@ -58,23 +59,9 @@ RST | Reset       | RST          |
 3 nc
 4 GND (G)
 
-#Display MAX7219
-1 VCC (+5v)
-2 GND
-3 DIN (MOSI,D7)
-4 CS (D6) !??D6 is MISO can it be used as GPO when SPI enabled? 
-5 CLK (SCK,D5)
+#deepsleep
+D0->RST Connect GPIO16 to RST pin only after uploading the code
 
-#IRsensor 
-(see from front)
-out (D3)
-gnd
-vcc
-
-#WallSwitch
-out (D2)
-
-#LedStript
-in (D1)
- 
 https://github.com/adam-p/markdown-here/wiki/Markdown-Cheatsheet#lists
+https://diyi0t.com/how-to-reduce-the-esp8266-power-consumption/
+https://www.electronicshub.org/esp8266-deep-sleep-mode/
