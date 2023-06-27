@@ -164,7 +164,13 @@ void setup_WIFIConnect() {
           status_led.set(cled_status::value_t::Work);
           to_ap_mode_thread->cancel();
         }
-        try_tosend_data(false);
+        mqtt.setup(config.getCSTR("MQTT_SERVER_IP"), config.getInt("MQTT_PORT"),
+                   pDeviceName);
+        mqtt.connect([](auto is_connected) {
+          if (is_connected) {
+            try_tosend_data(false);
+          }
+        });
       }
       wifi_status(cout);
     });
@@ -193,36 +199,27 @@ void try_tosend_data(bool force) {
     constexpr auto all_sensors = 5;
 
     if (force || (sensors.size() == all_sensors)) {
-        if (WL_CONNECTED == WiFi.status()) {
-          mqtt.setup(config.getCSTR("MQTT_SERVER_IP"),
-                     config.getInt("MQTT_PORT"), pDeviceName);
-          mqtt.connect([](auto is_connected) {
-            if (is_connected) {
-              String json_string;
-              serializeJson(sensors, json_string);
-              mqtt.publish("stat/weather3", json_string.c_str());
-            } else {
-              DBG_OUT << "mqtt is not connected, state="
-                      << mqtt.get_client().state() << endl;
-            }
-            event_loop::set_timeout([]() { deep_sleep(); },
-                                    BEFORE_SLEEP_TIMEOUT);
-          });
+
+        if (mqtt.isConnected()) {
+          String json_string;
+          serializeJson(sensors, json_string);
+          mqtt.publish(std::string("stat/") + pDeviceName, json_string.c_str());
         } else {
-          DBG_OUT << "WiFi is not connected, state=" << WiFi.status() << endl;
-          event_loop::set_timeout([]() { deep_sleep(); }, BEFORE_SLEEP_TIMEOUT);
+          DBG_OUT << "mqtt is not connected, state="
+                  << mqtt.get_client().state() << endl;
         }
+        event_loop::set_timeout([]() { deep_sleep(); }, BEFORE_SLEEP_TIMEOUT);
     }
 }
 
 void collect_data() {
     sensors.clear();
-    sensor::bmp180_get([](auto temperature, auto presure, auto status) {
+    sensor::bmp180_get([](auto temperature, auto pressure, auto status) {
       DBG_OUT << "bmp180_get temperature=" << temperature
-              << ", presure=" << presure << ", status=" << status << endl;
+              << ", pressure=" << pressure << ", status=" << status << endl;
       if (status) {
         sensors["bmp180"]["temperature"] = std::round(temperature * 100) / 100;
-        sensors["bmp180"]["presure"] = std::round(presure * 100) / 100;
+        sensors["bmp180"]["pressure"] = std::round(pressure * 100) / 100;
         try_tosend_data(false);
       }
     });

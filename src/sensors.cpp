@@ -36,7 +36,7 @@ void init() {
 }
 
 void bmp180_get(std::function<void(const double temperature,
-                                   const double presure, bool status)>
+                                   const double pressure, bool status)>
                     cb) {
   const auto status = pressure.startTemperature();
   if (status != 0) {

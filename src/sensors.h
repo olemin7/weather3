@@ -13,7 +13,7 @@
 namespace sensor {
 void init();
 void bmp180_get(std::function<void(const double temperature,
-                                   const double presure, bool status)>
+                                   const double pressure, bool status)>
                     cb);
 
 void dht_get(std::function<void(const float temperature, const float humidity,

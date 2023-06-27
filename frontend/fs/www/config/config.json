@@ -1,5 +1,5 @@
 {
-  "DEVICE_NAME": "weather3",
+  "DEVICE_NAME": "weather",
   "MQTT_SERVER_IP": "192.168.1.164",
   "MQTT_PORT": 1883,
   "MQTT_PERIOD": 30000,
