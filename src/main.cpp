@@ -1,3 +1,4 @@
+// #define DEBUG
 // clang-format off
 #include <Arduino.h>
 #include <SPI.h>
@@ -26,7 +27,6 @@
 #include <logs.h>
 #include <misk.h>
 #include <wifiHandle.h>
-#define DEBUG
 #include <ArduinoJson.h>
 
 #include "sensors.h"
@@ -56,7 +56,7 @@ CWifiStateSignal        wifiStateSignal;
 auto                    config = CConfig<512>();
 cled_status             status_led;
 
-StaticJsonDocument<256> sensors;
+StaticJsonDocument<512> sensors;
 
 void try_tosend_data(bool force);
 
@@ -153,6 +153,10 @@ void setup_WIFIConnect() {
             mqtt.connect([](auto is_connected) {
                 if (is_connected) {
                     try_tosend_data(false);
+                } else {
+#ifndef DEBUG
+                    deep_sleep();
+#endif
                 }
             });
         }
@@ -181,9 +185,11 @@ void setup_WIFIConnect() {
 }
 
 void try_tosend_data(bool force) {
-    constexpr auto all_sensors = 4;
+    constexpr auto all_sensors = 5;
 
     if (force || (sensors.size() == all_sensors)) {
+        DBG_OUT << "sensors used sz=" << sensors.memoryUsage() << endl;
+
         if (mqtt.isConnected()) {
             String json_string;
             serializeJson(sensors, json_string);
@@ -201,6 +207,7 @@ void try_tosend_data(bool force) {
 }
 
 void collect_data() {
+    DBG_FUNK();
     sensors.clear();
     sensor::bmp180_get([](auto temperature, auto pressure, auto status) {
         if (status) {
@@ -229,6 +236,14 @@ void collect_data() {
         }
     });
 
+    wifiStateSignal.onChange([](const wl_status_t& status) {
+        if (WL_CONNECTED == status) {
+            sensors["wifi"]["rssi"] = WiFi.RSSI();
+            sensors["wifi"]["ip"]   = WiFi.localIP();
+            try_tosend_data(false);
+        }
+    });
+
     event_loop::set_timeout(
         []() {
             DBG_OUT << "MAX_COLLECT_TIME passed, sending as is" << endl;
@@ -242,7 +257,6 @@ void setup_config() {
     config.getConfig()["DEVICE_NAME"]        = DEVICE_NAME;
     config.getConfig()["MQTT_SERVER_IP"]     = "";
     config.getConfig()["MQTT_PORT"]          = 0;
-    config.getConfig()["MQTT_PERIOD"]        = 60 * 1000;
     config.getConfig()["OTA_USERNAME"]       = "";
     config.getConfig()["OTA_PASSWORD"]       = "";
     config.getConfig()["DEEP_SLEEP_S"]       = 60 * 15;

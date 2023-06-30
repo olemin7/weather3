@@ -24,8 +24,10 @@ using namespace std::chrono_literals;
 SFE_BMP180     pressure;
 DHTesp         dht;
 BH1750         lightMeter(0x23); // 0x23 or 0x5C
-constexpr auto DHTPin  = D4;
-constexpr auto ADC_pin = A0;
+constexpr auto DHTPin        = D4;
+constexpr auto ADC_pin       = A0;
+constexpr auto retry_timeout = 1s;
+constexpr auto retry_count   = 3;
 
 void init() {
     if (!pressure.begin()) {
@@ -47,8 +49,8 @@ void bmp180_get(std::function<void(const float temperature, const float pressure
                 const auto status = pressure.getTemperature(temperature);
                 if (status) {
                     DBG_OUT << "Temperature: " << temperature << " deg C" << std::endl;
-                    auto status = pressure.startPressure(3); // The parameter is the oversampling setting, from 0 to 3
-                                                             // (highest res, longest wait)
+                    auto status = pressure.startPressure(3); // The parameter is the oversampling setting, from 0 to
+                                                             // 3 (highest res, longest wait)
                     if (status) {
                         event_loop::set_timeout(
                             [cb, temperature]() {
@@ -80,28 +82,42 @@ void bmp180_get(std::function<void(const float temperature, const float pressure
     }
 }
 void dht_get(std::function<void(const float temperature, const float humidity, bool status)> cb) {
-    event_loop::set_timeout(
-        [cb]() {
-            const auto temperature = dht.getTemperature();
-            DBG_OUT << "temperature= " << temperature << ", status=" << dht.getStatusString() << std::endl;
-            const auto st       = dht.getStatus() == DHTesp::ERROR_NONE;
-            const auto humidity = dht.getHumidity();
-            DBG_OUT << "humidity= " << humidity << ", status=" << dht.getStatusString() << std::endl;
-            const auto sh = dht.getStatus() == DHTesp::ERROR_NONE;
-            cb(temperature, humidity, st & sh);
-        },
-        std::chrono::milliseconds(dht.getMinimumSamplingPeriod()));
+    static auto retries = 0;
+    const auto  struc   = dht.getTempAndHumidity();
+    DBG_OUT << "temperature= " << struc.temperature << ", humidity= " << struc.humidity
+            << ", status=" << dht.getStatusString() << std::endl;
+    if (dht.getStatus() == DHTesp::ERROR_NONE) {
+        cb(struc.temperature, struc.humidity, true);
+    } else {
+        retries++;
+        DBG_OUT << "dht_get retries=" << retries << std::endl;
+
+        if (retry_count > retries) {
+            event_loop::set_timeout([cb = std::move(cb)]() { dht_get(std::move(cb)); }, retry_timeout);
+        } else {
+            cb(0, 0, false);
+        }
+    }
 }
 
 void BH1750_get(std::function<void(const float lux, bool status)> cb) {
+    static auto retries = 0;
     if (lightMeter.measurementReady()) {
         const auto lux = lightMeter.readLightLevel();
         DBG_OUT << "Light= " << lux << "lx" << std::endl;
         cb(lux, true);
     } else {
-        event_loop::set_timeout([cb = std::move(cb)]() { BH1750_get(std::move(cb)); }, 200ms);
+        retries++;
+        DBG_OUT << "BH1750_get retries=" << retries << std::endl;
+
+        if (retry_count > retries) {
+            event_loop::set_timeout([cb = std::move(cb)]() { BH1750_get(std::move(cb)); }, retry_timeout);
+        } else {
+            cb(0, false);
+        }
     }
 }
+
 void battery_get(std::function<void(const float volt, bool status)> cb) {
     const auto first = analogRead(ADC_pin);
     event_loop::set_timeout(
@@ -111,7 +127,7 @@ void battery_get(std::function<void(const float volt, bool status)> cb) {
             DBG_OUT << "adc val= " << val << ",volt=" << volt << std::endl;
             cb(volt, true);
         },
-        100ms);
+        300ms);
 }
 
 } // namespace sensor

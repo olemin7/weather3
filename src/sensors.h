@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 namespace sensor {
+
 void init();
 void bmp180_get(std::function<void(const float temperature, const float pressure, bool status)> cb);
 
