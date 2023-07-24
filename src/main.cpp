@@ -211,27 +211,27 @@ void collect_data() {
     sensors.clear();
     sensor::bmp180_get([](auto temperature, auto pressure, auto status) {
         if (status) {
-            sensors["bmp180"]["temperature"] = String(temperature, 2);
-            sensors["bmp180"]["pressure"]    = String(pressure, 2);
+            sensors["bmp180"]["temperature"] = temperature;
+            sensors["bmp180"]["pressure"]    = pressure;
             try_tosend_data(false);
         }
     });
     sensor::dht_get([](auto temperature, auto humidity, auto status) {
         if (status) {
-            sensors["dht"]["temperature"] = String(temperature, 2);
-            sensors["dht"]["humidity"]    = String(humidity, 2);
+            sensors["dht"]["temperature"] = temperature;
+            sensors["dht"]["humidity"]    = humidity;
             try_tosend_data(false);
         }
     });
     sensor::BH1750_get([](const float lux, bool status) {
         if (status) {
-            sensors["BH1750"]["value"] = String(lux, 2);
+            sensors["BH1750"]["value"] = lux;
             try_tosend_data(false);
         }
     });
     sensor::battery_get([](const float volt, bool status) {
         if (status) {
-            sensors["battery"]["value"] = String(volt, 2);
+            sensors["battery"]["value"] = volt;
             try_tosend_data(false);
         }
     });
