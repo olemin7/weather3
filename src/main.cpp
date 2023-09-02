@@ -225,10 +225,13 @@ void try_tosend_data(bool force) {
         DBG_OUT << "sensors used sz=" << sensors.memoryUsage() << endl;
 
         if (mqtt.isConnected()) {
-            sensors["name"] = pDeviceName;
-            String json_string;
+            String      json_string;
+            std::string topic;
+            topic = config.getCSTR("MQTT_TOPIC_SENSORS");
+            topic += "/";
+            topic += pDeviceName;
             serializeJson(sensors, json_string);
-            mqtt.publish(config.getCSTR("MQTT_TOPIC_SENSORS"), json_string.c_str());
+            mqtt.publish(topic.c_str(), json_string.c_str());
             mqtt.get_client().flush(); // force to send
             status_led.set(cled_status::value_t::Work);
         } else {
@@ -246,9 +249,9 @@ void collect_data() {
     DBG_FUNK();
     sensors.clear();
     sensor::bmp_get([](auto temperature, auto pressure, auto humidity) {
-        sensors["weather"]["temperature"] = static_cast<int>(temperature);
-        sensors["weather"]["pressure"]    = static_cast<int>(pressure);
-        sensors["weather"]["humidity"]    = static_cast<int>(humidity);
+        sensors["weather"]["temperature"] = temperature;
+        sensors["weather"]["pressure"]    = pressure;
+        sensors["weather"]["humidity"]    = humidity;
         try_tosend_data(false);
     });
     sensor::ambient_light_get([](const float lux) {
