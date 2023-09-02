@@ -39,7 +39,7 @@ constexpr auto SERVER_PORT_WEB = 80;
 
 constexpr auto AP_MODE_TIMEOUT           = 30s; // switch to ap if no wifi
 constexpr auto AUTO_REBOOT_AFTER_AP_MODE = 5min; // switch to ap if no wifi
-constexpr auto BEFORE_SLEEP_TIMEOUT      = 5s; // switch to ap if no wifi
+constexpr auto BEFORE_SLEEP_TIMEOUT      = 1s; //
 
 constexpr auto DEVICE_NAME = "weather3";
 const char*    update_path = "/firmware";
@@ -77,9 +77,18 @@ te_ret get_status(ostream& out) {
 }
 
 void deep_sleep() {
-    const auto sleeptime = chrono::seconds(config.getInt("DEEP_SLEEP_S"));
-    DBG_OUT << "deepSleep, sleeptime=" << sleeptime.count() << endl;
-    ESP.deepSleep(chrono::microseconds(sleeptime).count());
+    auto sleeptime_s = config.getInt("DEEP_SLEEP_S");
+    if (sensors.containsKey("battery") && sensors["battery"].containsKey("percentage")) {
+        const auto bat_percentage     = sensors["battery"]["percentage"].template as<int>();
+        const auto low_bat_percentage = config.getInt("LOW_BAT_PERCENAGE");
+        if (bat_percentage < low_bat_percentage) {
+            DBG_OUT << "low bat=" << bat_percentage << ", Threshold=" << low_bat_percentage << std::endl;
+            sleeptime_s = config.getInt("DEEP_SLEEP_LOW_BAT_S");
+        }
+    }
+
+    DBG_OUT << "deepSleep, sleeptime=" << sleeptime_s << "s" << std::endl;
+    ESP.deepSleep(sleeptime_s * 1000000); // microseconds
 }
 
 void setup_WebPages() {
@@ -184,16 +193,43 @@ void setup_WIFIConnect() {
     }
 }
 
-void try_tosend_data(bool force) {
-    constexpr auto all_sensors = 5;
+bool is_data_collected(const JsonDocument& data) {
+    if (data.containsKey("weather")) {
+        if (sensors["weather"].containsKey("temperature") == false) {
+            return false;
+        }
+        if (sensors["weather"].containsKey("pressure") == false) {
+            return false;
+        }
+        if (sensors["weather"].containsKey("humidity") == false) {
+            return false;
+        }
+        if (sensors["weather"].containsKey("ambient_light") == false) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    if (data.containsKey("battery") == false) {
+        return false;
+    }
+    if (data.containsKey("wifi") == false) {
+        return false;
+    }
 
-    if (force || (sensors.size() == all_sensors)) {
+    return true;
+}
+
+void try_tosend_data(bool force) {
+    if (force || is_data_collected(sensors)) {
         DBG_OUT << "sensors used sz=" << sensors.memoryUsage() << endl;
 
         if (mqtt.isConnected()) {
+            sensors["name"] = pDeviceName;
             String json_string;
             serializeJson(sensors, json_string);
-            mqtt.publish(std::string("stat/") + pDeviceName, json_string.c_str());
+            mqtt.publish(config.getCSTR("MQTT_TOPIC_SENSORS"), json_string.c_str());
+            mqtt.get_client().flush(); // force to send
             status_led.set(cled_status::value_t::Work);
         } else {
             status_led.set(cled_status::value_t::Warning);
@@ -209,31 +245,29 @@ void try_tosend_data(bool force) {
 void collect_data() {
     DBG_FUNK();
     sensors.clear();
-    sensor::bmp180_get([](auto temperature, auto pressure, auto status) {
-        if (status) {
-            sensors["bmp180"]["temperature"] = temperature;
-            sensors["bmp180"]["pressure"]    = pressure;
-            try_tosend_data(false);
-        }
+    sensor::bmp_get([](auto temperature, auto pressure, auto humidity) {
+        sensors["weather"]["temperature"] = static_cast<int>(temperature);
+        sensors["weather"]["pressure"]    = static_cast<int>(pressure);
+        sensors["weather"]["humidity"]    = static_cast<int>(humidity);
+        try_tosend_data(false);
     });
-    sensor::dht_get([](auto temperature, auto humidity, auto status) {
-        if (status) {
-            sensors["dht"]["temperature"] = temperature;
-            sensors["dht"]["humidity"]    = humidity;
-            try_tosend_data(false);
-        }
+    sensor::ambient_light_get([](const float lux) {
+        sensors["weather"]["ambient_light"] = static_cast<int>(lux);
+        try_tosend_data(false);
     });
-    sensor::BH1750_get([](const float lux, bool status) {
-        if (status) {
-            sensors["BH1750"]["value"] = lux;
-            try_tosend_data(false);
+    sensor::battery_get([](const float volt) {
+        const auto min        = config.getFloat("V_BAT_MIN");
+        const auto max        = config.getFloat("V_BAT_MAX");
+        auto       percentage = static_cast<int>((volt - min) * 100 / (max - min));
+        if (percentage < 0) {
+            percentage = 0;
         }
-    });
-    sensor::battery_get([](const float volt, bool status) {
-        if (status) {
-            sensors["battery"]["value"] = volt;
-            try_tosend_data(false);
+        if (percentage > 100) {
+            percentage = 100;
         }
+        sensors["battery"]["percentage"] = percentage;
+        sensors["battery"]["value"]      = volt;
+        try_tosend_data(false);
     });
 
     wifiStateSignal.onChange([](const wl_status_t& status) {
@@ -254,13 +288,18 @@ void collect_data() {
 
 void setup_config() {
     config.getConfig().clear();
-    config.getConfig()["DEVICE_NAME"]        = DEVICE_NAME;
-    config.getConfig()["MQTT_SERVER_IP"]     = "";
-    config.getConfig()["MQTT_PORT"]          = 0;
-    config.getConfig()["OTA_USERNAME"]       = "";
-    config.getConfig()["OTA_PASSWORD"]       = "";
-    config.getConfig()["DEEP_SLEEP_S"]       = 60 * 15;
-    config.getConfig()["MAX_COLLECT_TIME_S"] = 15;
+    config.getConfig()["DEVICE_NAME"]          = DEVICE_NAME;
+    config.getConfig()["MQTT_SERVER_IP"]       = "";
+    config.getConfig()["MQTT_PORT"]            = 0;
+    config.getConfig()["MQTT_TOPIC_SENSORS"]   = "sensors";
+    config.getConfig()["OTA_USERNAME"]         = "";
+    config.getConfig()["OTA_PASSWORD"]         = "";
+    config.getConfig()["DEEP_SLEEP_S"]         = 60 * 15;
+    config.getConfig()["DEEP_SLEEP_LOW_BAT_S"] = 60 * 60;
+    config.getConfig()["MAX_COLLECT_TIME_S"]   = 15;
+    config.getConfig()["V_BAT_MIN"]            = 2.4;
+    config.getConfig()["V_BAT_MAX"]            = 4.2;
+    config.getConfig()["LOW_BAT_PERCENAGE"]    = 30;
     if (!config.load("/www/config/config.json")) {
         // write file
         config.write("/www/config/config.json");

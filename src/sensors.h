@@ -13,12 +13,9 @@
 namespace sensor {
 
 void init();
-void bmp180_get(std::function<void(const float temperature, const float pressure, bool status)> cb);
-
-void dht_get(std::function<void(const float temperature, const float humidity, bool status)> cb);
-
-void BH1750_get(std::function<void(const float lux, bool status)> cb);
-void battery_get(std::function<void(const float volt, bool status)> cb);
+void bmp_get(std::function<void(const float temperature, const float pressure, const float humidity)> cb);
+void ambient_light_get(std::function<void(const float lux)> cb);
+void battery_get(std::function<void(const float volt)> cb);
 
 } // namespace sensor
 
