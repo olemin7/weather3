@@ -49,10 +49,12 @@ using led_status::cled_status;
 
 const char* pDeviceName = nullptr;
 
+bool           is_service_mode  = false;
+constexpr auto SERVICE_MODE_PIN = D5;
+
 ESP8266WebServer        serverWeb(SERVER_PORT_WEB);
 CMQTT                   mqtt;
 ESP8266HTTPUpdateServer otaUpdater;
-CWifiStateSignal        wifiStateSignal;
 auto                    config = CConfig<512>();
 cled_status             status_led;
 
@@ -77,9 +79,14 @@ te_ret get_status(ostream& out) {
 }
 
 void deep_sleep() {
+    if (is_service_mode) {
+        DBG_OUT << "iservice_mode, deepSleep is disabled" << std::endl;
+        return;
+    }
+
     auto sleeptime_s = config.getInt("DEEP_SLEEP_S");
-    if (sensors.containsKey("battery") && sensors["battery"].containsKey("percentage")) {
-        const auto bat_percentage     = sensors["battery"]["percentage"].template as<int>();
+    if (sensors.containsKey("battery")) {
+        const auto bat_percentage     = sensors["battery"].template as<int>();
         const auto low_bat_percentage = config.getInt("LOW_BAT_PERCENAGE");
         if (bat_percentage < low_bat_percentage) {
             DBG_OUT << "low bat=" << bat_percentage << ", Threshold=" << low_bat_percentage << std::endl;
@@ -149,48 +156,49 @@ void setup_WIFIConnect() {
     static event_loop::pevent to_ap_mode_thread;
     WiFi.hostname(pDeviceName);
     WiFi.begin();
+    if (is_service_mode) {
+        to_ap_mode_thread = event_loop::set_timeout(
+            []() {
+                DBG_OUT << "Rebooting" << std::endl;
+                setup_wifi("", DEF_AP_PWD, pDeviceName, WIFI_AP, false);
 
-    wifiStateSignal.onChange([](const wl_status_t& status) {
-        DBG_OUT << "wifiState" << status << endl;
-        if (WL_CONNECTED == status) {
-            // skip AP mode
-            DBG_OUT << "wifi RSSI=" << static_cast<signed>(WiFi.RSSI()) << endl;
-            if (to_ap_mode_thread) {
-                to_ap_mode_thread->cancel();
-            }
-            mqtt.setup(config.getCSTR("MQTT_SERVER_IP"), config.getInt("MQTT_PORT"), pDeviceName);
-            mqtt.connect([](auto is_connected) {
-                if (is_connected) {
-                    try_tosend_data(false);
-                } else {
-#ifndef DEBUG
-                    deep_sleep();
-#endif
-                }
-            });
-        }
-        wifi_status(cout);
+                event_loop::set_timeout(
+                    []() {
+                        DBG_OUT << "Rebooting" << std::endl;
+                        ESP.restart();
+                    },
+                    AUTO_REBOOT_AFTER_AP_MODE);
+            },
+            AP_MODE_TIMEOUT);
+    }
+
+    static WiFiEventHandler onStationModeConnected = WiFi.onStationModeConnected([](auto event) {
+        DBG_OUT << "WiFi conected, ssid =" << event.ssid << ", channel=" << static_cast<unsigned>(event.channel)
+                << endl;
     });
 
-    to_ap_mode_thread = event_loop::set_timeout(
-        []() {
-            status_led.set(cled_status::value_t::Warning);
-            WiFi.persistent(false);
-            setup_wifi("", DEF_AP_PWD, pDeviceName, WIFI_AP, false);
+    static WiFiEventHandler onStationModeGotIP = WiFi.onStationModeGotIP([](auto event) {
+        if (to_ap_mode_thread) {
+            to_ap_mode_thread->cancel();
+        }
+        DBG_OUT << "WiFi IP=" << event.ip << ", mask=" << event.mask << ", gw=" << event.gw << endl;
+        sensors["wifi"]["rssi"] = WiFi.RSSI();
+        sensors["wifi"]["ip"]   = event.ip.toString();
 
-            event_loop::set_timeout(
-                []() {
-                    DBG_OUT << "Rebooting" << std::endl;
-                    ESP.restart();
-                },
-                AUTO_REBOOT_AFTER_AP_MODE);
-        },
-        AP_MODE_TIMEOUT);
-
-    if (WIFI_STA == WiFi.getMode()) {
-        DBG_OUT << "connecting <" << WiFi.SSID() << "> " << endl;
-        return;
-    }
+        event_loop::set_timeout(
+            []() {
+                DBG_OUT << "mqtt connection" << endl;
+                mqtt.setup(config.getCSTR("MQTT_SERVER_IP"), config.getInt("MQTT_PORT"), pDeviceName);
+                mqtt.connect([](auto is_connected) {
+                    if (is_connected) {
+                        try_tosend_data(false);
+                    } else {
+                        deep_sleep();
+                    }
+                });
+            },
+            0s);
+    });
 }
 
 bool is_data_collected(const JsonDocument& data) {
@@ -268,17 +276,11 @@ void collect_data() {
         if (percentage > 100) {
             percentage = 100;
         }
-        sensors["battery"]["percentage"] = percentage;
-        sensors["battery"]["value"]      = volt;
-        try_tosend_data(false);
-    });
 
-    wifiStateSignal.onChange([](const wl_status_t& status) {
-        if (WL_CONNECTED == status) {
-            sensors["wifi"]["rssi"] = WiFi.RSSI();
-            sensors["wifi"]["ip"]   = WiFi.localIP();
-            try_tosend_data(false);
-        }
+        DBG_OUT << "battery adc=" << volt << ", pers=" << percentage << std::endl;
+
+        sensors["battery"] = percentage;
+        try_tosend_data(false);
     });
 
     event_loop::set_timeout(
@@ -311,6 +313,7 @@ void setup_config() {
 }
 
 void setup() {
+    pinMode(SERVICE_MODE_PIN, INPUT_PULLUP);
     Serial.begin(SERIAL_BAUND);
     Wire.begin();
     logs_begin();
@@ -330,14 +333,19 @@ void setup() {
     setup_WebPages();
 
     LittleFS_info(DBG_OUT);
+    is_service_mode = !deboncedPin(SERVICE_MODE_PIN, 30);
+    if (is_service_mode) {
+        DBG_OUT << "in service mode" << endl;
+        status_led.set(cled_status::value_t::On);
+    }
 
     //-----------------
     setup_WIFIConnect();
+
     DBG_OUT << "Setup done" << endl;
 }
 
 void loop() {
-    wifiStateSignal.loop();
     serverWeb.handleClient();
     event_loop::loop();
     mqtt.loop();
