@@ -83,18 +83,14 @@ void deep_sleep() {
         DBG_OUT << "iservice_mode, deepSleep is disabled" << std::endl;
         return;
     }
-
+    sensor::power_off();
     auto sleeptime_s = config.getInt("DEEP_SLEEP_S");
-    if (sensors.containsKey("battery")) {
-        const auto bat_percentage     = sensors["battery"].template as<int>();
-        const auto low_bat_percentage = config.getInt("LOW_BAT_PERCENAGE");
-        if (bat_percentage < low_bat_percentage) {
-            DBG_OUT << "low bat=" << bat_percentage << ", Threshold=" << low_bat_percentage << std::endl;
-            sleeptime_s = config.getInt("DEEP_SLEEP_LOW_BAT_S");
-        }
+    if (sensors.containsKey("upd_period")) {
+        sleeptime_s = sensors["upd_period"];
     }
 
     DBG_OUT << "deepSleep, sleeptime=" << sleeptime_s << "s" << std::endl;
+    delay(1000);
     ESP.deepSleep(sleeptime_s * 1000000); // microseconds
 }
 
@@ -246,23 +242,29 @@ void try_tosend_data(bool force) {
             status_led.set(cled_status::value_t::Warning);
             DBG_OUT << "mqtt is not connected, state=" << mqtt.get_client().state() << endl;
         }
-
-        if (WiFi.getMode() != WIFI_AP) {
-            event_loop::set_timeout([]() { deep_sleep(); }, BEFORE_SLEEP_TIMEOUT);
-        }
+        event_loop::set_timeout([]() { deep_sleep(); }, BEFORE_SLEEP_TIMEOUT);
     }
 }
 
 void collect_data() {
     DBG_FUNK();
     sensors.clear();
-    sensor::bmp_get([](auto temperature, auto pressure, auto humidity) {
-        sensors["weather"]["temperature"] = temperature;
-        sensors["weather"]["pressure"]    = pressure;
-        sensors["weather"]["humidity"]    = humidity;
-        try_tosend_data(false);
+    sensor::bme280_get([](auto temperature, auto pressure, auto humidity, auto is_successful) {
+        if (is_successful) {
+            sensors["weather"]["pressure"] = pressure;
+            try_tosend_data(false);
+        }
     });
-    sensor::ambient_light_get([](const float lux) {
+
+    sensor::sth30_get([](auto temperature, auto humidity, auto is_successful) {
+        if (is_successful) {
+            sensors["weather"]["temperature"] = temperature;
+            sensors["weather"]["humidity"]    = humidity;
+            try_tosend_data(false);
+        }
+    });
+
+    sensor::bh1750_light_get([](auto lux) {
         sensors["weather"]["ambient_light"] = static_cast<int>(lux);
         try_tosend_data(false);
     });
@@ -280,6 +282,14 @@ void collect_data() {
         DBG_OUT << "battery adc=" << volt << ", pers=" << percentage << std::endl;
 
         sensors["battery"] = percentage;
+
+        sensors["upd_period"]         = config.getInt("DEEP_SLEEP_S");
+        const auto low_bat_percentage = config.getInt("LOW_BAT_PERCENAGE");
+        if (percentage < low_bat_percentage) {
+            DBG_OUT << "low bat=" << percentage << ", Threshold=" << low_bat_percentage << std::endl;
+            sensors["upd_period"] = config.getInt("DEEP_SLEEP_LOW_BAT_S");
+        }
+
         try_tosend_data(false);
     });
 
