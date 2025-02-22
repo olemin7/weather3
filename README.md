@@ -65,3 +65,16 @@ D0->RST Connect GPIO16 to RST pin only after uploading the code
 https://github.com/adam-p/markdown-here/wiki/Markdown-Cheatsheet#lists
 https://diyi0t.com/how-to-reduce-the-esp8266-power-consumption/
 https://www.electronicshub.org/esp8266-deep-sleep-mode/
+
+#usb not tetected ubuntu 22.04
+https://stackoverflow.com/questions/70123431/why-would-ch341-uart-be-disconnected-from-ttyusb
+sudo dmesg
+...
+ 1553.747636] ch341 3-1.4:1.0: ch341-uart converter detected
+[ 1553.748179] usb 3-1.4: ch341-uart converter now attached to ttyUSB0
+[ 1554.300543] input: BRLTTY 6.4 Linux Screen Driver Keyboard as /devices/virtual/input/input38
+[ 1554.302801] usb 3-1.4: usbfs: interface 0 claimed by ch341 while 'brltty' sets config #1
+[ 1554.303356] ch341-uart ttyUSB0: ch341-uart converter now disconnected from ttyUSB0
+
+
+sudo apt remove brltty

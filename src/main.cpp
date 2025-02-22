@@ -41,9 +41,11 @@ constexpr auto AP_MODE_TIMEOUT           = 30s; // switch to ap if no wifi
 constexpr auto AUTO_REBOOT_AFTER_AP_MODE = 5min; // switch to ap if no wifi
 constexpr auto BEFORE_SLEEP_TIMEOUT      = 1s; //
 
-constexpr auto DEVICE_NAME = "weather3";
+#define DEVICE_NAME "weather3"
 const char*    update_path = "/firmware";
 constexpr auto DEF_AP_PWD  = "12345678";
+constexpr auto DEVICE_FW = DEVICE_NAME " " __DATE__
+                                       " " __TIME__;
 
 using led_status::cled_status;
 
@@ -61,10 +63,18 @@ cled_status             status_led;
 StaticJsonDocument<512> sensors;
 
 void try_tosend_data(bool force);
+std::string get_MAC()
+{
+    uint8_t mac[6];
+    char macStr[15] = {0};
+    wifi_get_macaddr(STATION_IF, mac);
+    sprintf(macStr, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return macStr;
+}
 
 te_ret get_about(ostream& out) {
     out << "{";
-    out << "\"firmware\":\"" << DEVICE_NAME << "\"" << __DATE__ << " " << __TIME__ << "\"";
+    out << "\"firmware\":\"" << DEVICE_FW << "\"";
     out << ",\"deviceName\":\"" << pDeviceName << "\"";
     out << ",\"resetInfo\":" << system_get_rst_info()->reason;
     out << "}";
@@ -178,42 +188,49 @@ void setup_WIFIConnect() {
             to_ap_mode_thread->cancel();
         }
         DBG_OUT << "WiFi IP=" << event.ip << ", mask=" << event.mask << ", gw=" << event.gw << endl;
-        sensors["wifi"]["rssi"] = WiFi.RSSI();
-        sensors["wifi"]["ip"]   = event.ip.toString();
+        sensors["rssi"] = WiFi.RSSI();
+        sensors["ip"] = event.ip.toString();
 
         event_loop::set_timeout(
             []() {
                 DBG_OUT << "mqtt connection" << endl;
                 mqtt.setup(config.getCSTR("MQTT_SERVER_IP"), config.getInt("MQTT_PORT"), pDeviceName);
-                mqtt.connect([](auto is_connected) {
-                    if (is_connected) {
-                        try_tosend_data(false);
-                    } else {
-                        deep_sleep();
-                    }
-                });
+                mqtt.connect([](auto is_connected)
+                             {
+                        if (is_connected) {
+                            std::stringstream info;
+                            info << "{\"sw\":\"" << DEVICE_FW << "\",\"mac\":\"" << get_MAC() << "\"}";
+                            mqtt.publish("advertisement", info.str());
+                            try_tosend_data(false);
+                        }
+                        else
+                        {
+                            deep_sleep();
+                        } });
             },
             0s);
     });
 }
 
 bool is_data_collected(const JsonDocument& data) {
-    if (data.containsKey("weather")) {
-        if (sensors["weather"].containsKey("temperature") == false) {
-            return false;
-        }
-        if (sensors["weather"].containsKey("pressure") == false) {
-            return false;
-        }
-        if (sensors["weather"].containsKey("humidity") == false) {
-            return false;
-        }
-        if (sensors["weather"].containsKey("ambient_light") == false) {
-            return false;
-        }
-    } else {
+
+    if (sensors.containsKey("temperature") == false)
+    {
         return false;
     }
+    if (sensors.containsKey("pressure") == false)
+    {
+        return false;
+    }
+    if (sensors.containsKey("humidity") == false)
+    {
+        return false;
+    }
+    if (sensors.containsKey("ambient_light") == false)
+    {
+        return false;
+    }
+
     if (data.containsKey("battery") == false) {
         return false;
     }
@@ -229,13 +246,9 @@ void try_tosend_data(bool force) {
         DBG_OUT << "sensors used sz=" << sensors.memoryUsage() << endl;
 
         if (mqtt.isConnected()) {
-            String      json_string;
-            std::string topic;
-            topic = config.getCSTR("MQTT_TOPIC_SENSORS");
-            topic += "/";
-            topic += pDeviceName;
+            String json_string;
             serializeJson(sensors, json_string);
-            mqtt.publish(topic.c_str(), json_string.c_str());
+            mqtt.publish("devices/" + get_MAC() + "/sensors", json_string.c_str());
             mqtt.get_client().flush(); // force to send
             status_led.set(cled_status::value_t::Work);
         } else {
@@ -251,23 +264,26 @@ void collect_data() {
     sensors.clear();
     sensor::bme280_get([](auto temperature, auto pressure, auto humidity, auto is_successful) {
         if (is_successful) {
-            sensors["weather"]["pressure"] = pressure;
+            sensors["pressure"] = pressure;
+            sensors["temperature"] = temperature;
+            sensors["humidity"] = humidity;
             try_tosend_data(false);
         }
     });
 
-    sensor::sth30_get([](auto temperature, auto humidity, auto is_successful) {
-        if (is_successful) {
-            sensors["weather"]["temperature"] = temperature;
-            sensors["weather"]["humidity"]    = humidity;
-            try_tosend_data(false);
-        }
-    });
+    // sensor::sth30_get([](auto temperature, auto humidity, auto is_successful) {
+    //     if (is_successful) {
+    //         sensors["weather"]["temperature"] = temperature;
+    //         sensors["weather"]["humidity"]    = humidity;
+    //         try_tosend_data(false);
+    //     }
+    // });
 
-    sensor::bh1750_light_get([](auto lux) {
-        sensors["weather"]["ambient_light"] = static_cast<int>(lux);
-        try_tosend_data(false);
-    });
+    sensor::bh1750_light_get([](auto lux)
+                             {
+        sensors["ambient_light"] = static_cast<int>(lux);
+        try_tosend_data(false); });
+
     sensor::battery_get([](const float volt) {
         const auto min        = config.getFloat("V_BAT_MIN");
         const auto max        = config.getFloat("V_BAT_MAX");

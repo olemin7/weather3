@@ -70,12 +70,13 @@ void bme280_get(
         [cb = std::move(cb)]() {
             if (bme280.isMeasuring() == false) {
                 p_timer->cancel();
-                const auto temp     = bme280.readTempC();
-                const auto pressure = bme280.readFloatPressure() / 100;
-                const auto humidity = bme280.readFloatHumidity();
-                DBG_OUT << "temp= " << temp << ", pressure=" << pressure << ", humidity=" << humidity << std::endl;
+                BME280_SensorMeasurements measurements;
+                bme280.readAllMeasurements(&measurements, 0);
+                measurements.pressure /= 100;
+                DBG_OUT << "temp= " << measurements.temperature << ", pressure=" << measurements.pressure
+                        << ", humidity=" << measurements.humidity << std::endl;
 
-                cb(temp, pressure, humidity, true);
+                cb(measurements.temperature, measurements.pressure, measurements.humidity, true);
             }
         },
         measuring_timeout, false);
